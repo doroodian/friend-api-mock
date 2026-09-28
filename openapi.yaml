@@ -1,0 +1,467 @@
+openapi: 3.1.0
+info:
+  title: Whiteboard Interviews API
+  version: 1.0.0
+  description: |
+    Backend contract derived from frontend/src/lib/mock-api.ts and
+    frontend/src/lib/types.ts, with usage checked against frontend/src/routes/.
+    The frontend currently uses localStorage, not HTTP. Paths, methods, status
+    codes, authentication and authorization below are proposed backend choices;
+    request and success response shapes preserve the mock client's contract.
+
+    All eight async client functions are represented by operationId. The
+    synchronous mockRemoteParticipants() helper returns hard-coded data and
+    has no HTTP or realtime protocol contract, so no presence endpoint is invented.
+    Login, logout, deletion, pagination and realtime transport are not specified
+    by this frontend and are outside this contract.
+
+    Proposed authentication uses an HttpOnly session cookie for interviewers and
+    session-scoped guests. Interviewer login is provisioned outside this API.
+    A successful public join sets the guest cookie without changing JoinResult.
+    The HTTP client must send cookies (credentials: include for cross-origin
+    requests); cookie/CORS/CSRF configuration belongs to the implementation.
+    The current UI does not retain participant identity or hide owner controls
+    from guests; the backend must enforce the permissions documented here.
+
+    For compatibility, missing sessions return JSON null for functions typed
+    Session | null, and saveCanvas is a no-op for a missing session. Invalid joins
+    return HTTP 200 with ok: false. Authentication and validation errors are new
+    HTTP-layer behavior and should reject the corresponding client promise.
+servers:
+  - url: /api
+security:
+  - sessionCookie: []
+paths:
+  /sessions:
+    get:
+      operationId: listSessions
+      summary: List the authenticated interviewer's sessions
+      description: Interviewer authentication required. No request body. Sorted by updatedAt descending; includes full canvases. No pagination.
+      x-allowed-roles: [interviewer]
+      responses:
+        '200':
+          description: Sessions accessible to the interviewer, newest update first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Session'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      operationId: createSession
+      summary: Create an interview session
+      description: |
+        Interviewer authentication required. Creates a draft with a generated ID,
+        candidate token, current timestamps, candidateEditingLocked=false and
+        empty nodes/connectors/strokes. An empty title becomes "Untitled interview".
+      x-allowed-roles: [interviewer]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSessionInput'
+      responses:
+        '201':
+          description: Created session.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /sessions/{id}:
+    parameters:
+      - $ref: '#/components/parameters/SessionId'
+    get:
+      operationId: getSession
+      summary: Read a session and its canvas
+      description: |
+        Authentication required: owning interviewer or a participant authorized
+        for this session. No request body. Returns JSON null if it does not exist.
+      x-allowed-roles: [interviewer, candidate, observer]
+      responses:
+        '200':
+          $ref: '#/components/responses/NullableSession'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    patch:
+      operationId: updateSession
+      summary: Update session metadata or controls
+      description: |
+        Owning interviewer authentication required. Only supplied fields change;
+        updatedAt becomes the current time, including for an empty patch.
+        All four states are accepted; the mock defines no transition restrictions.
+        Returns JSON null if the session does not exist.
+      x-allowed-roles: [interviewer]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateSessionInput'
+      responses:
+        '200':
+          $ref: '#/components/responses/NullableSession'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /sessions/{id}/canvas:
+    parameters:
+      - $ref: '#/components/parameters/SessionId'
+    put:
+      operationId: saveCanvas
+      summary: Replace the complete canvas document
+      description: |
+        Authentication required: owning interviewer or candidate authorized for
+        this session. Observers cannot write. Proposed server authorization denies
+        candidate writes while candidateEditingLocked=true and all writes while
+        state=ended (the UI makes ended boards read-only). These checks are absent
+        from the mock. Replaces the entire canvas and updates updatedAt; there is
+        no patch, merge or revision protocol. The UI debounces saves by 800 ms.
+        Missing sessions are a no-op, matching Promise<void> in the mock.
+      x-allowed-roles: [interviewer, candidate]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CanvasDoc'
+      responses:
+        '204':
+          description: Save completed, or session missing. No response body.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /sessions/{id}/candidate-link/rotate:
+    parameters:
+      - $ref: '#/components/parameters/SessionId'
+    post:
+      operationId: rotateCandidateLink
+      summary: Replace the candidate invitation token
+      description: |
+        Owning interviewer authentication required. No request body. Generates a
+        new candidateToken and updates updatedAt. The previous token can no longer
+        be used to join. Existing guest-session revocation is not specified by the
+        frontend. Returns JSON null if the session does not exist.
+      x-allowed-roles: [interviewer]
+      responses:
+        '200':
+          $ref: '#/components/responses/NullableSession'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /sessions/{id}/duplicate:
+    parameters:
+      - $ref: '#/components/parameters/SessionId'
+    post:
+      operationId: duplicateSession
+      summary: Duplicate a session as a draft
+      description: |
+        Owning interviewer authentication required. No request body. Deep-copies
+        the canvas, prompt and candidateEditingLocked; appends " (copy)" to the
+        title; assigns a new ID, candidate token and timestamps; sets state=draft.
+        Returns JSON null if the source session does not exist. HTTP 200 is used
+        for both outcomes to preserve the nullable return contract.
+      x-allowed-roles: [interviewer]
+      responses:
+        '200':
+          $ref: '#/components/responses/NullableSession'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /join/{candidateToken}:
+    parameters:
+      - name: candidateToken
+        in: path
+        required: true
+        description: Opaque invitation token from the frontend /join/{token} URL. Demo tokens need not match generated-token length.
+        schema:
+          type: string
+    post:
+      operationId: joinByToken
+      summary: Join as a candidate using an invitation token
+      security: []
+      description: |
+        Public: no existing authenticated session required; possession of a valid
+        invitation token grants admission. Accepts draft and live sessions, even
+        when candidate editing is locked. The UI trims displayName and disables
+        submission for a blank name. Success returns a generated participant ID,
+        the supplied name, role=candidate, color="#7dd3fc" and isSelf=true.
+        Proposed backend behavior also issues a session-scoped guest cookie.
+        Invalid/revoked tokens, ended sessions and archived sessions return the
+        failure variant with the exact reason strings documented in JoinFailure.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [displayName]
+              properties:
+                displayName:
+                  type: string
+                  description: Display name; the current UI sends a trimmed, nonblank string.
+      responses:
+        '200':
+          description: Join succeeded or was rejected as a domain result.
+          headers:
+            Set-Cookie:
+              description: On success only, issues the proposed session-scoped guest credential as an HttpOnly cookie.
+              schema:
+                type: string
+              example: interview_session=opaque-guest-credential; Path=/api; HttpOnly; Secure; SameSite=Lax
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JoinResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: interview_session
+      description: |
+        Proposed opaque authenticated-session credential, not implemented in the
+        mock. Identifies an interviewer or a guest bound to a specific session.
+        Role and resource permissions are enforced server-side; x-allowed-roles
+        documents authorization and is not an OpenAPI security scope.
+  parameters:
+    SessionId:
+      name: id
+      in: path
+      required: true
+      description: Opaque session ID; not necessarily a UUID (for example demo-session).
+      schema:
+        type: string
+  responses:
+    NullableSession:
+      description: Full session, or JSON null when the requested session does not exist.
+      content:
+        application/json:
+          schema:
+            oneOf:
+              - $ref: '#/components/schemas/Session'
+              - type: 'null'
+    BadRequest:
+      description: Request does not conform to the schema.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unauthorized:
+      description: Authentication cookie is missing, invalid or expired.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Forbidden:
+      description: Authenticated caller lacks the required role or session access, or editing is disallowed.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+  schemas:
+    Error:
+      type: object
+      description: Proposed HTTP-layer error envelope; distinct from the client's JoinFailure domain result.
+      required: [message]
+      properties:
+        message:
+          type: string
+    SessionState:
+      type: string
+      enum: [draft, live, ended, archived]
+    CreateSessionInput:
+      type: object
+      additionalProperties: false
+      required: [title, prompt]
+      properties:
+        title:
+          type: string
+          description: May be empty; the server substitutes "Untitled interview".
+        prompt:
+          type: string
+          description: May be empty; the UI calls this optional but always sends a string.
+    UpdateSessionInput:
+      type: object
+      additionalProperties: false
+      description: All properties are optional; empty patches are accepted.
+      properties:
+        title:
+          type: string
+        prompt:
+          type: string
+        state:
+          $ref: '#/components/schemas/SessionState'
+        candidateEditingLocked:
+          type: boolean
+    Session:
+      type: object
+      required: [id, title, prompt, state, candidateToken, candidateEditingLocked, createdAt, updatedAt, canvas]
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        prompt:
+          type: string
+        state:
+          $ref: '#/components/schemas/SessionState'
+        candidateToken:
+          type: string
+          description: Opaque invitation token; included even in join responses to preserve the current Session shape.
+        candidateEditingLocked:
+          type: boolean
+        createdAt:
+          type: integer
+          format: int64
+          description: Unix epoch timestamp in milliseconds, not an ISO date string.
+        updatedAt:
+          type: integer
+          format: int64
+          description: Unix epoch timestamp in milliseconds.
+        canvas:
+          $ref: '#/components/schemas/CanvasDoc'
+    Participant:
+      type: object
+      required: [id, name, role, color]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        role:
+          type: string
+          enum: [interviewer, candidate, observer]
+        color:
+          type: string
+          description: CSS color string.
+        isSelf:
+          type: boolean
+        isMock:
+          type: boolean
+          description: Optional flag used by simulated presence.
+    CanvasDoc:
+      type: object
+      required: [nodes, connectors, strokes]
+      properties:
+        nodes:
+          type: array
+          items:
+            $ref: '#/components/schemas/CanvasNode'
+        connectors:
+          type: array
+          items:
+            $ref: '#/components/schemas/Connector'
+        strokes:
+          type: array
+          items:
+            $ref: '#/components/schemas/Stroke'
+    CanvasNode:
+      type: object
+      required: [id, type, x, y, w, h, label]
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          description: Open-ended catalog type or note, text, rect, ellipse; not a closed enum.
+        x:
+          type: number
+          description: World-coordinate horizontal position; may be negative.
+        y:
+          type: number
+          description: World-coordinate vertical position; may be negative.
+        w:
+          type: number
+        h:
+          type: number
+        label:
+          type: string
+    Connector:
+      type: object
+      required: [id, from, to, label, style, dashed]
+      properties:
+        id:
+          type: string
+        from:
+          type: string
+          description: Source node ID.
+        to:
+          type: string
+          description: Destination node ID.
+        label:
+          type: string
+        style:
+          type: string
+          enum: [straight, elbow, curved]
+        dashed:
+          type: boolean
+    Stroke:
+      type: object
+      required: [id, points, color, width, tool]
+      properties:
+        id:
+          type: string
+        points:
+          type: array
+          description: Flat world-coordinate pairs [x1, y1, x2, y2, ...].
+          items:
+            type: number
+        color:
+          type: string
+        width:
+          type: number
+        tool:
+          type: string
+          enum: [pen, highlighter]
+    JoinResult:
+      oneOf:
+        - $ref: '#/components/schemas/JoinSuccess'
+        - $ref: '#/components/schemas/JoinFailure'
+    JoinSuccess:
+      type: object
+      required: [ok, session, participant]
+      properties:
+        ok:
+          type: boolean
+          const: true
+        session:
+          $ref: '#/components/schemas/Session'
+        participant:
+          $ref: '#/components/schemas/Participant'
+    JoinFailure:
+      type: object
+      required: [ok, reason]
+      properties:
+        ok:
+          type: boolean
+          const: false
+        reason:
+          type: string
+          enum:
+            - This link is invalid or has been revoked.
+            - This interview has already ended.
+            - This interview is no longer available.
