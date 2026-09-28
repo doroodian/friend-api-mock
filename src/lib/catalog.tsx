@@ -11,7 +11,7 @@ import {
   Database,
   DatabaseZap,
   FileArchive,
-  Gateway,
+  Waypoints,
   Globe,
   HardDrive,
   Layers,
@@ -87,7 +87,7 @@ export const CATALOG: CatalogCategory[] = [
     items: [
       item("client", "Client", Users),
       item("browser-client", "Browser / mobile", MonitorSmartphone),
-      item("api-gateway", "API gateway", Gateway),
+      item("api-gateway", "API gateway", Waypoints),
       item("load-balancer", "Load balancer", Workflow),
       item("cdn", "CDN", Globe),
       item("external-api", "External API", Cloud),

@@ -59,7 +59,7 @@ export function Board({ doc, onChange, readOnly }: BoardProps) {
   const [tool, setTool] = useState<Tool>("select");
   const [selected, setSelected] = useState<string[]>([]);
   const [connectFrom, setConnectFrom] = useState<string | null>(null);
-  const [penColor, setPenColor] = useState(PEN_COLORS[1]);
+  const [penColor, setPenColor] = useState<string>(PEN_COLORS[1] ?? "#fbbf24");
   const [editingNode, setEditingNode] = useState<string | null>(null);
   const [activeStroke, setActiveStroke] = useState<Stroke | null>(null);
 
